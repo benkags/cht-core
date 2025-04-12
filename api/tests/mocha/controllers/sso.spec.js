@@ -8,17 +8,50 @@ const { users } = require('@medic/user-management')(config, db, dataContext);
 const template = require('../../../src/services/template');
 const secureSettings = require('@medic/settings');
 const settingsService = require('../../../src/services/settings');
+const environment = require('@medic/environment');
 
-const client = require('../../../src/openid-client-wrapper');
+const client = require('../../../src/openid-client-wrapper.js');
 
 let controller;
 
 let req;
 let res;
 
-describe('sso controller', () => {
+const pathPrefix = '/' + environment.db + '/';
 
-  beforeEach(() => {
+describe('sso controller', () => {
+  const settings =  {
+    oidc_provider: {
+      discovery_url: 'http://discovery.url',
+      client_id: 'client_id',
+      clientSecret: 'client-secret'
+    }
+  }
+
+  const ASConfig = {
+    serverMetadata: () => ({
+      supportsPKCE: () => true,
+    }),
+    clientMetadata: () => {return {client_id: 'id'}}
+  }
+
+  const id_token = 'token123'
+    , name = 'ari'
+    , preferred_username = 'ari'
+    , email = 'ari@test';
+
+  const claims = () => {
+    return { name, preferred_username, email };
+  }
+
+  const init = async () => {
+    sinon.stub(settingsService, 'get').returns(settings);
+
+    sinon.stub(secureSettings, 'getCredentials').resolves('secret');
+    await controller.init();
+  }
+
+  beforeEach(async () => {
     template.clear();
     controller = rewire('../../../src/controllers/sso');
 
@@ -41,23 +74,12 @@ describe('sso controller', () => {
       clearCookie: () => {},
       setHeader: () => {}
     };
-    
-    sinon.stub(settingsService, 'get').returns({
-      oidc_provider: {
-        discovery_url: 'http://discovery.url',
-        client_id: 'client_id',
-        clientSecret: 'client-secret'
-      }
-    });
 
-    sinon.stub(client, 'discovery').resolves({
-      serverMetadata: () => ({
-        supportsPKCE: () => true,
-      })
-    });
+    sinon.stub(client, 'discovery').resolves(ASConfig);
     sinon.stub(client, 'randomPKCECodeVerifier').returns('verifier123');
     sinon.stub(client, 'calculatePKCECodeChallenge').resolves('challenge123');
     sinon.stub(client, 'buildAuthorizationUrl').returns('https://fake-url.com');
+    sinon.stub(client, 'authorizationCodeGrant').resolves({ id_token, claims });
   });
 
   afterEach(() => {
@@ -65,99 +87,97 @@ describe('sso controller', () => {
   });
 
   describe('init', () => {
-    it('should set pathPrefix', async () => {
-      sinon.stub(secureSettings, 'getCredentials').resolves('secret');
-      const pathPrefix = '/foo';
-      await controller.init(pathPrefix);
-      const actualPathPrefix = controller.__get__('pathPrefix');
-      chai.expect(actualPathPrefix).to.equal(pathPrefix);
+    it('should return authorization server config object', async () => {
+      await init();
+      const config = await controller.__get__('ASConfig');
+      chai.expect(config).to.be.deep.equal(ASConfig);
     });
-  });
-  
-  describe('getOidcClientSecret', () => {
+
+    it('should use settings config', async() => {
+      await init();
+      chai.expect(client.discovery.calledWith(new URL(settings.oidc_provider.discovery_url), settings.oidc_provider.client_id, 'secret')).to.be.true;
+    })
+
     it('should throw an error if no secret is found', async () => {
+      sinon.stub(settingsService, 'get').returns(settings);
       sinon.stub(secureSettings, 'getCredentials').resolves(null);
+
       try {
-        await controller.__get__('getOidcClientSecret')('foo');
+        await controller.init();
         chai.expect.fail('Expected error to be thrown');
       } catch (err) {
-        chai.expect(err).to.equal('No OIDC client secret \'foo\' configured.');
+        chai.expect(err.message).to.equal('No OIDC client secret \'oidc:client-secret\' configured.');
       }
     });
 
-    it('should return the secret if found', async () => {
-      const secret = 'secret';
-      sinon.stub(secureSettings, 'getCredentials').resolves(secret);
-      const result = await controller.__get__('getOidcClientSecret')('foo');
-      chai.expect(result).to.equal(secret);
+    it('should not return server config if SSO is not enabled.', async () => {
+      sinon.stub(settingsService, 'get').returns({});
+      sinon.stub(secureSettings, 'getCredentials').resolves('secret');
+      const config = await controller.init();
+      chai.expect(config).to.be.undefined;
     });
   });
 
-  describe('getSsoBaseUrl', () => {
-    it('should return the base URL for SSO', async () => {
-      sinon.stub(secureSettings, 'getCredentials').resolves('secret');
-      const pathPrefix = '/foo';
-      await controller.init(pathPrefix);
-      const url = controller.__get__('getSsoBaseUrl')(req);
-      chai.expect(url.href).to.equal(`http://xx.app.medicmobile.org${pathPrefix}`);
+  describe('networkCallRetry', () => {
+    it('should retry 3 times', async () => {
+      const fn = sinon.fake.throws("Error");
+      try {
+        await controller.__get__('networkCallRetry')(fn, 3);
+        chai.expect.fail('Error');
+      } catch (err) {
+        chai.expect(fn.calledThrice).to.be.true;
+      }
     });
   });
 
   describe('getAuthorizationUrl', () => {
     it('should return the authorization URL', async () => {
-      sinon.stub(secureSettings, 'getCredentials').resolves('secret');
-      const pathPrefix = '/foo';
-      await controller.init(pathPrefix);
-      const url = await controller.__get__('getAuthorizationUrl')(req);
+      await init();
+      const url = await controller.__get__('getAuthorizationUrl')(ASConfig, 'http://localhost/medic/oidc/get_token');
       chai.expect(url).to.equal('https://fake-url.com');
+    });
+
+    it('should set PKCE paramemers', async () => {
+      await init();
+      const redirect = 'http://localhost/medic/oidc/get_token';
+      const expectedParams = {
+        redirect_uri: redirect,
+        scope: 'openid',
+        code_challenge_method: 'S256',
+        code_challenge: 'challenge123'
+      };
+      await controller.__get__('getAuthorizationUrl')(ASConfig, redirect);
+      chai.expect(client.buildAuthorizationUrl.calledWith(ASConfig, expectedParams)).to.be.true;
     });
   });
 
   describe('getToken', async () => {
-    const pathPrefix = '/foo';
-    await controller.init(pathPrefix);
     it('should return a token', async () => {
+      await init();
       req.query.code = 'code123';
       req.query.state = 'state123';
       req.cookies = { verifier: 'verifier123' };
-      sinon.stub(client, 'authorizationCodeGrant').resolves({ access_token: 'token123' });
-      const token = await controller.__get__('getIdToken')(req, res);
-      chai.expect(token).to.equal('token123');
+
+      const token = await controller.__get__('getIdToken')(ASConfig, 'http://current_url/');
+      chai.expect(token).to.deep.equal({
+        id_token,
+        user: {
+          name,
+          username: preferred_username,
+          email
+        }
+      });
     });
 
-    it('should handle errors', async () => {
-      req.query.code = 'code123';
-      req.query.state = 'state123';
-      req.cookies = { verifier: 'verifier123' };
-      sinon.stub(client, 'authorizationCodeGrant').rejects(new Error('Error'));
-      try {
-        await controller.__get__('getIdToken')(req, res);
-        chai.expect.fail('Expected error to be thrown');
-      } catch (err) {
-        chai.expect(err.message).to.equal('Error');
-      }
-    });
-  });
-
-  describe('getUserPassword', () => {
-    it('should return user and password', async () => {
-      const username = 'user123';
-      const user = { id: 'user123', username: 'user123' };
-      sinon.stub(users, 'getUser').returns(user);
-      sinon.stub(users, 'resetPassword').resolves('password123');
-      const result = await controller.__get__('getUserPassword')(username);
-      chai.expect(result).to.deep.equal({ user: 'user123', password: 'password123' });
-    });
-
-    it('should throw an error if user is not found', async () => {
-      const username = 'invalidUser';
-      sinon.stub(users, 'getUser').returns(null);
-      try {
-        await controller.__get__('getUserPassword')(username);
-        chai.expect.fail('Expected error to be thrown');
-      } catch (err) {
-        chai.expect(err).to.deep.equal({ status: 401, error: `Invalid. Could not login ${username} using SSO.` });
-      }
+    it('should set PKCE paramemers', async () => {
+      await init();
+      const expectedParams = {
+        idTokenExpected: true,
+        pkceCodeVerifier: 'random'
+      };
+      controller.__set__('code_verifier', 'random');
+      await controller.__get__('getIdToken')(ASConfig, 'http://current_url/');
+      chai.expect(client.authorizationCodeGrant.calledWith(ASConfig, 'http://current_url/', expectedParams)).to.be.true;
     });
   });
 });

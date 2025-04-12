@@ -12,99 +12,86 @@ const request = require('@medic/couch-request');
 const client = require('../openid-client-wrapper');
 const { setCookies, sendLoginErrorResponse } = require('./login');
 const settingsService = require('../services/settings');
-
-const SSO_PATH = "oidc";
-const SSO_AUTHORIZE_PATH = `${SSO_PATH}/authorize`;
-const SSO_AUTHORIZE_GET_TOKEN_PATH = `${SSO_PATH}/get_token`;
+const { setTimeout } = require('later');
 
 const OIDC_CLIENT_SECRET_KEY = "oidc:client-secret";
 
 let ASConfig;
 let code_verifier;
-let state;
-let pathPrefix;
 
-const getOidcClientSecret = async (key) => {
-  const secret = await secureSettings.getCredentials(key);
-
-  if(!secret)
-  {
-    const err = `No OIDC client secret '${key}' configured.`
-    logger.error(err);
-    throw err;
+const networkCallRetry = async (call, retryCount = 3) => {
+  try {
+    return await call();
+  } catch (err) {
+    if (retryCount == 1) {
+      throw err;
+    }
+    logger.debug(`Retrying ${call}.}`)
+    new Promise(resolve => setTimeout(resolve, 10));
+    return await networkCallRetry(call, --retryCount);
   }
+}
 
-  return secret;
-};
-
-const init = async (routePrefix) => {
-  pathPrefix = routePrefix;
-
+const init = async () => {
   const settings = await settingsService.get()
-
   if(!settings.oidc_provider) {
-    logger.info("Authorization server config settings not provided.");
+    logger.info('Authorization server config settings not provided.');
     return;
   }
 
-  const {
-    discovery_url,
-    client_id
-  } = settings.oidc_provider;
+  const clientSecret = await secureSettings.getCredentials(OIDC_CLIENT_SECRET_KEY);
+  if(!clientSecret) {
+    const err = `No OIDC client secret '${OIDC_CLIENT_SECRET_KEY}' configured.`
+    logger.error(err)
+    throw new Error(err);
+  }
 
   try {
-    const clientSecret = await getOidcClientSecret(OIDC_CLIENT_SECRET_KEY);
-
-    ASConfig = await client.discovery(
-      new URL(discovery_url),
-      client_id,
-      clientSecret
-    );
+    ASConfig = await networkCallRetry(
+      () => client.discovery(new URL(settings.oidc_provider.discovery_url), settings.oidc_provider.client_id, clientSecret),
+      3
+    )
   } catch (e) {
-    throw { status: 400, error: e};
-  } 
+    logger.error(e)
+    const err = 'The SSO provider is unreachable.';
+    throw { status: 503, error: err };
+  }
 
   logger.info('Authorization server config auth config loaded successfully.');
 
   return ASConfig;
 }
 
-const getSsoBaseUrl = (req) => {
-  return new URL(`${req.protocol}://${req.get('host')}${pathPrefix}`);
-}
-
-const getAuthorizationUrl = async (req) => {
+const getAuthorizationUrl = async (serverConfig, redirectUrl) => {
   code_verifier = client.randomPKCECodeVerifier();
 
   const code_challenge_method = 'S256';
   const code_challenge = await client.calculatePKCECodeChallenge(code_verifier);
-  const redirectUrl = `${getSsoBaseUrl(req).href}${SSO_AUTHORIZE_GET_TOKEN_PATH}`;
 
   let parameters = {
     redirect_uri: redirectUrl,
     scope: 'openid'
   }
- 
-  if (ASConfig.serverMetadata().supportsPKCE()) {
+
+  if(serverConfig?.serverMetadata()?.supportsPKCE()) {
     parameters = { ...parameters, ...{ code_challenge_method, code_challenge } }
   }
 
-  return client.buildAuthorizationUrl(ASConfig, parameters);
+  return client.buildAuthorizationUrl(serverConfig, parameters);
 }
 
-const getIdToken = async (req) => {
+const getIdToken = async (serverConfig, currentUrl) => {
   let params = {};
 
-  if (ASConfig.serverMetadata().supportsPKCE()) {
+  if(serverConfig?.serverMetadata()?.supportsPKCE()) {
     params = {
       idTokenExpected: true,
-      pkceCodeVerifier: code_verifier,
-      state: state
+      pkceCodeVerifier: code_verifier
     }
   }
 
-  const currentUrl =  new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
   const tokens = await client.authorizationCodeGrant(ASConfig, currentUrl, params);
+
   const { id_token } = tokens;
   const { name, preferred_username, email } = tokens.claims();
 
@@ -194,8 +181,9 @@ const getCookie = async (username) => {
 
 const login = async (req, res) => {
   req.body = { locale: 'en' };
+  const currentUrl =  new URL(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
   try {
-    const auth = await getIdToken(req, res);
+    const auth = await getIdToken(ASConfig, currentUrl);
     const cookie = await getCookie(auth.user.username);
     const sessionRes = await getSession(cookie);
     const redirectUrl = await setCookies(req, res, sessionRes, cookie);
@@ -205,23 +193,18 @@ const login = async (req, res) => {
   }
 };
 
-const redirectToSSOAuthorize =  (req, res) => {
-  res.redirect(301, `${getSsoBaseUrl(req).href}${SSO_AUTHORIZE_PATH}`);
-}
-
 const authorize = async (req, res) => {
-  const redirectUrl = await getAuthorizationUrl(req);
-
-  res.redirect(301, redirectUrl.href);
+  const redirectUrl = new URL(
+    `/${environment.db}/oidc/get_token`,
+    `${req.protocol}://${req.get('host')}`
+  ).toString();
+  const authUrl = await getAuthorizationUrl(ASConfig, redirectUrl);
+  res.redirect(301, authUrl.href);
 }
 
 module.exports = {
   init,
-  redirectToSSOAuthorize,
   authorize,
-  login,
-  SSO_AUTHORIZE_GET_TOKEN_PATH,
-  SSO_AUTHORIZE_PATH,
-  SSO_PATH,
+  login
 }
  
