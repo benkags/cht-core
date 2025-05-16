@@ -1,156 +1,56 @@
 const config = require('./libs/config');
-const passwords = require('./libs/passwords');
 const db = require('./libs/db');
+const passwords = require('./libs/passwords');
 
-const isSSOLoginGloballyEnabled = () => {
-  return isSsoLoginEnabled();
+const isSsoLoginEnabled = () => !!config.get('oidc_provider');
+
+const getUsersByOidcUsername = async (oidcUsername) => db.users
+                                                         .query('users/users_by_field', { include_docs: true, key: ['oidc_username', oidcUsername] })
+                                                         .then(({ rows }) => rows.map(({ doc }) => doc));
+
+const getUserIdWithDuplicateOidcUsername = async (oidcUsername, userDocId) => {
+  const duplicates = await getUsersByOidcUsername(oidcUsername);
+  return duplicates
+    .map(({ _id }) => _id)
+    .filter(id => id !== userDocId)[0];
 };
 
-const shouldEnableSSOLogin = (data) => {
-  return isSSOLoginGloballyEnabled() && data.oidc === true;
-};
-
-const validateSSOLoginEdit = async (data, updatedUser) => {
-  const user = await db.users.get(updatedUser._id);
-  const wasUsingSSO = user.oidc;
-
-  if (wasUsingSSO && 'oidc' in data && data.oidc === undefined) {
-    return {
-      msg: 'Explicitly disable sso login.',
-      key: 'sso.user.disable.undefined',
-    };
-  }
-
-  const disablingSSO = data.oidc === false;
-
-  const passwordOrTokenLogin = data.password || data.token_login;
-
-  if (disablingSSO && wasUsingSSO && !passwordOrTokenLogin) {
-    return {
-      msg: 'Password is required when disabling sso login.',
-      key: 'sso.user.disable.password',
-    };
-  }
-
-  if (shouldEnableSSOLogin(data)) {
-    updatedUser.password = passwords.generate();
-    updatedUser.password_change_required = false;
-  }
-};
-
-const validateSSOLogin = (data, newUser = true, user = {}) => {
-  return newUser
-    ? validateSSOLoginCreate(data)
-    : validateSSOLoginEdit(data, user);
-};
-
-const enableSSOLogin = (response) => {
-  return Promise
-    .all([
-      db.users.get(response.user.id),
-      db.medic.get(response['user-settings'].id),
-    ])
-    .then(([ user, userSettings ]) => {
-      user.oidc = true;
-
-      userSettings.oidc = true;
-
-      response.oidc = true;
-
-      return Promise.all([ db.users.put(user), db.medic.put(userSettings) ]);
-    })
-    .then(() => response);
-};
-
-/**
- * Disables token-login for a user.
- * Deletes the `oidc` properties from the user and userSettings doc.
- * Clears pending tasks in existent SMSs
- *
- * @param {Object} response - the response of previous actions
- * @returns {Promise<{Object}>} - updated response to be sent to the client
- */
-const disableSSOLogin = (response) => {
-  return Promise
-    .all([
-      db.users.get(response.user.id),
-      db.medic.get(response['user-settings'].id),
-    ])
-    .then(([ user, userSettings ]) => {
-      delete user.oidc;
-      delete userSettings.oidc;
-
-      return Promise.all([
-        db.medic.put(userSettings),
-        db.users.put(user),
-      ]);
-    })
-    .then(() => response);
-};
-
-/**
- * Enables or disables sso-login for a user
- * @param {Object} data - the request body
- * @param {String} appUrl - the base URL of the application
- * @param {Object} response - the response of previous actions
- * @returns {Promise<{Object}>} - updated response to be sent to the client
- */
-const manageSSOLogin = (data, response) => {
-  if (data.oidc === false) {
-    return disableSSOLogin(response);
-  }
-
-  if (!shouldEnableSSOLogin(data)) {
-    return Promise.resolve(response);
-  }
-
-  if (data.oidc === true) {
-    return enableSSOLogin(response);
-  }
-};
-
-const hasBothOidcAndTokenOrPasswordLogin = data => data.oidc && (data.password || data.token_login);
-
-const isSsoLoginEnabled = () => {
-  const settings = config.get();
-  return !!settings?.oidc_provider?.client_id;
-};
-
-const validateSSOLoginCreate = (data) => {
-  if (!data.oidc){
+const validateSsoLogin = async (data) => {
+  if (!data.oidc_username){
     return;
   }
-  
-  if (hasBothOidcAndTokenOrPasswordLogin(data)){
-    return {
-      msg: 'Either OIDC Login only or Token/Password Login is allowed'
-    }; 
+  if (data.password || data.token_login){
+    return { msg: 'Cannot set password or token_login with oidc_username.' };
+  }
+  if (!isSsoLoginEnabled()){
+    return { msg: 'Cannot set oidc_username when OIDC Login is not enabled.' };
   }
 
-  if (!isSsoLoginEnabled()){
-    return {
-      msg: 'OIDC Login is not enabled'
-    }; 
-
+  const duplicateUserId = await getUserIdWithDuplicateOidcUsername(data.oidc_username, data._id);
+  if (duplicateUserId) {
+    return { msg: `The oidc_username [${data.oidc_username}] already exists for user [${duplicateUserId}].` };
   }
 
   data.password = passwords.generate();
   data.password_change_required = false;
 };
 
-const validateSsoLoginUpdate = (data, updatedUser) => {
+const validateSsoLoginUpdate = async (data, updatedUser) => {
+  const authFieldUpdated = !!['oidc_username', 'password', 'token_login'].find(key => Object.keys(data).includes(key));
+  if (!authFieldUpdated) {
+    return;
+  }
   // token_login is set on updateUser later, so check data here
-  if (updatedUser.oidc && data.token_login) {
-    return { msg: 'Either OIDC Login only or Token/Password Login is allowed' };
+  if (updatedUser.oidc_username && data.token_login) {
+    return { msg: 'Cannot set token_login with oidc_username.' };
   }
 
-  return validateSSOLoginEdit(data, updatedUser);
+  return validateSsoLogin(updatedUser);
 };
 
-
 module.exports = {
-  shouldEnableSSOLogin,
-  validateSSOLogin,
-  manageSSOLogin,
+  isSsoLoginEnabled,
+  getUsersByOidcUsername,
+  validateSsoLogin,
   validateSsoLoginUpdate
 };

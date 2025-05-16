@@ -1,6 +1,7 @@
 const db = require('./libs/db');
 const config = require('./libs/config');
 const passwords = require('./libs/passwords');
+const ssoLogin = require('./sso-login');
 const taskUtils = require('@medic/task-utils');
 const phoneNumber = require('@medic/phone-number');
 const TOKEN_EXPIRE_TIME = 24 * 60 * 60 * 1000; // 24 hours
@@ -150,26 +151,26 @@ const clearOldTokenLoginDoc = ({ token_login: { token }={} }={}) => {
   }
 
   return db.medic
-    .get(getTokenLoginDocId(token))
-    .then(doc => {
-      if (!doc || !doc.tasks) {
-        return;
-      }
+           .get(getTokenLoginDocId(token))
+           .then(doc => {
+             if (!doc || !doc.tasks) {
+               return;
+             }
 
-      const pendingTasks = doc.tasks.filter(task => task.state === 'pending');
-      if (!pendingTasks.length) {
-        return;
-      }
+             const pendingTasks = doc.tasks.filter(task => task.state === 'pending');
+             if (!pendingTasks.length) {
+               return;
+             }
 
-      pendingTasks.forEach(task => taskUtils.setTaskState(task, 'cleared'));
-      return db.medic.put(doc);
-    })
-    .catch(err => {
-      if (err.status === 404) {
-        return;
-      }
-      throw err;
-    });
+             pendingTasks.forEach(task => taskUtils.setTaskState(task, 'cleared'));
+             return db.medic.put(doc);
+           })
+           .catch(err => {
+             if (err.status === 404) {
+               return;
+             }
+             throw err;
+           });
 };
 
 /**
@@ -228,8 +229,7 @@ const validateTokenLoginCreate = (data) => {
 };
 
 const validateTokenLoginEdit = (data, user, userSettings) => {
-  const passwordOrSso = data.password || user.oidc;
-  if (shouldDisableTokenLogin(data) && user.token_login && !passwordOrSso) {
+  if (shouldDisableTokenLogin(data) && user.token_login && !data.password) {
     // when disabling token login for a user that had it enabled, setting a password is required
     return {
       msg: 'Password is required when disabling token login.',
@@ -269,35 +269,35 @@ const getUserByToken = (token) => {
 
   const loginTokenDocId = getTokenLoginDocId(token);
   return db.medic
-    .get(loginTokenDocId)
-    .then(loginTokenDoc => db.users.get(loginTokenDoc.user))
-    .then(user => {
-      if (!user.token_login || !user.token_login.active) {
-        throw invalid;
-      }
+           .get(loginTokenDocId)
+           .then(loginTokenDoc => db.users.get(loginTokenDoc.user))
+           .then(user => {
+             if (!user.token_login || !user.token_login.active) {
+               throw invalid;
+             }
 
-      if (user.token_login.token !== token) {
-        throw invalid;
-      }
+             if (user.token_login.token !== token) {
+               throw invalid;
+             }
 
-      if (user.token_login.expiration_date <= new Date().getTime()) {
-        throw expired;
-      }
+             if (user.token_login.expiration_date <= new Date().getTime()) {
+               throw expired;
+             }
 
-      if (user.oidc && config.get().oidc_provider?.client_id) {
-        const err = new Error('Token login not allowed for SSO users');
-        err.status = 401;
-        throw err;
-      }
+             if (user.oidc_username && ssoLogin.isSsoLoginEnabled()) {
+               const err = new Error('Token login not allowed for SSO users');
+               err.status = 401;
+               throw err;
+             }
 
-      return user._id;
-    })
-    .catch(err => {
-      if (err.status === 404) {
-        throw invalid;
-      }
-      throw err;
-    });
+             return user._id;
+           })
+           .catch(err => {
+             if (err.status === 404) {
+               throw invalid;
+             }
+             throw err;
+           });
 };
 
 

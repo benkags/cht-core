@@ -51,7 +51,7 @@ const USER_EDITABLE_FIELDS = RESTRICTED_USER_EDITABLE_FIELDS.concat([
   'contact',
   'type',
   'roles',
-  'oidc',
+  'oidc_username',
 ]);
 
 const RESTRICTED_SETTINGS_EDITABLE_FIELDS = [
@@ -124,8 +124,8 @@ const getSettingsByIds = async (ids) => {
 };
 
 const getAllUsers = async () => db.users
-  .allDocs({ include_docs: true, start_key: 'org.couchdb.user:', end_key: 'org.couchdb.user:\ufff0' })
-  .then(({ rows }) => rows.map(({ doc }) => doc));
+                                  .allDocs({ include_docs: true, start_key: 'org.couchdb.user:', end_key: 'org.couchdb.user:\ufff0' })
+                                  .then(({ rows }) => rows.map(({ doc }) => doc));
 
 const getUsers = async (facilityId, contactId) => {
   if (!contactId) {
@@ -151,37 +151,37 @@ const getUsersAndSettings = async ({ facilityId, contactId } = {}) => {
 
 const validateContact = (id, placeID) => {
   return db.medic.get(id)
-    .then(doc => {
-      if (!people.isAPerson(doc)) {
-        return Promise.reject(error400('Wrong type, contact is not a person.', 'contact.type.wrong'));
-      }
-      if (!hasParent(doc, placeID)) {
-        return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
-      }
-      return doc;
-    });
+           .then(doc => {
+             if (!people.isAPerson(doc)) {
+               return Promise.reject(error400('Wrong type, contact is not a person.', 'contact.type.wrong'));
+             }
+             if (!hasParent(doc, placeID)) {
+               return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
+             }
+             return doc;
+           });
 };
 
 const validateNewUsernameForDb = (username, database) => {
   return database.get(createID(username))
-    .catch(err => {
-      if (err.status === 404) {
-        // username not found - it's valid.
-        return;
-      }
-      // unexpected error
-      err.message = 'Failed to validate new username: ' + err.message;
-      return Promise.reject(err);
-    })
-    .then(user => {
-      if (user) {
-        return Promise.reject(error400(
-          'Username "'+ username +'" already taken.',
-          'username.taken',
-          { 'username': username }
-        ));
-      }
-    });
+                 .catch(err => {
+                   if (err.status === 404) {
+                     // username not found - it's valid.
+                     return;
+                   }
+                   // unexpected error
+                   err.message = 'Failed to validate new username: ' + err.message;
+                   return Promise.reject(err);
+                 })
+                 .then(user => {
+                   if (user) {
+                     return Promise.reject(error400(
+                       'Username "'+ username +'" already taken.',
+                       'username.taken',
+                       { 'username': username }
+                     ));
+                   }
+                 });
 };
 
 /**
@@ -209,12 +209,12 @@ const createUser = async (data, response) => {
   updatedUser._id = createID(data.username);
 
   return db.users.put(updatedUser)
-    .then(body => {
-      response.user = {
-        id: body.id,
-        rev: body.rev
-      };
-    });
+           .then(body => {
+             response.user = {
+               id: body.id,
+               rev: body.rev
+             };
+           });
 };
 
 const hasUserCreateFlag = doc => doc?.user_for_contact?.create;
@@ -315,13 +315,13 @@ const setContactParent = data => {
   if (data.contact.parent) {
     // contact parent must exist
     return places.getPlace(data.contact.parent)
-      .then(place => {
-        if (!hasParent(place, data.place)) {
-          return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
-        }
-        // save result to contact object
-        data.contact.parent = lineage.minifyLineage(place);
-      });
+                 .then(place => {
+                   if (!hasParent(place, data.place)) {
+                     return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
+                   }
+                   // save result to contact object
+                   data.contact.parent = lineage.minifyLineage(place);
+                 });
   }
   // creating new contact
   data.contact.parent = lineage.minifyLineage(data.place);
@@ -455,6 +455,10 @@ const getSettingsUpdates = (username, data) => {
     }
   });
 
+  if (Object.keys(data).includes('oidc_username')) {
+    settings.oidc_login = !!data.oidc_username;
+  }
+
   getCommonFieldsUpdates(settings, data);
 
   return settings;
@@ -528,12 +532,10 @@ const getDataRoles = (data) => data.roles || (data.type && getRoles(data.type));
 const missingFields = data => {
   const required = ['username'];
 
-  if (!ssoLogin.shouldEnableSSOLogin(data)) {
-    if (tokenLogin.shouldEnableTokenLogin(data)) {
-      required.push('phone');
-    } else {
-      required.push('password');
-    }
+  if (tokenLogin.shouldEnableTokenLogin(data)) {
+    required.push('phone');
+  } else if (!data.oidc_username) {
+    required.push('password');
   }
 
   const userRoles = getDataRoles(data);
@@ -696,7 +698,7 @@ const validateUserContact = (data, user) => {
  * @param {string=} data.phone Valid phone number. Required if token_login is enabled for the user.
  * @param {Boolean=} data.token_login A boolean representing whether or not the Login by SMS should be enabled for this
  *   user.
- * @param {string=} data.oidc_provider Client ID for the OIDC Client. Can be set but not together 
+ * @param {string=} data.oidc_username unique OIDC identifier for user. Can be set but not together
  * with @param token_login|@param password
  * @param {string=} data.fullname Full name
  * @param {string=} data.email Email address
@@ -720,7 +722,6 @@ const createUserEntities = async (data, appUrl) => {
   await createUser(data, response);
   await createUserSettings(data, response);
   await tokenLogin.manageTokenLogin(data, appUrl, response);
-  await ssoLogin.manageSSOLogin(data, response);
   return response;
 };
 
@@ -848,21 +849,21 @@ const createRecordBulkLog = (record, status, error, message) => {
 
 const hydrateUserSettings = (userSettings) => {
   return db.medic
-    .allDocs({ keys: [ userSettings.contact_id, ...userSettings.facility_id ], include_docs: true })
-    .then((response) => {
-      if (!response.rows || !Array.isArray(response.rows)) {
-        return userSettings;
-      }
-      const [ contactRow, ...facilityRows ] = response.rows;
-      if (!facilityRows.length || !contactRow) { // malformed response
-        return userSettings;
-      }
+           .allDocs({ keys: [ userSettings.contact_id, ...userSettings.facility_id ], include_docs: true })
+           .then((response) => {
+             if (!response.rows || !Array.isArray(response.rows)) {
+               return userSettings;
+             }
+             const [ contactRow, ...facilityRows ] = response.rows;
+             if (!facilityRows.length || !contactRow) { // malformed response
+               return userSettings;
+             }
 
-      userSettings.facility = facilityRows.map(row => row.doc);
-      userSettings.contact = contactRow.doc;
+             userSettings.facility = facilityRows.map(row => row.doc);
+             userSettings.contact = contactRow.doc;
 
-      return userSettings;
-    });
+             return userSettings;
+           });
 };
 
 const getUserDoc = (username, dbName) => db[dbName]
@@ -898,12 +899,10 @@ const createMultiFacilityUser = async (data, appUrl) => {
   if (tokenLoginError) {
     throw error400(tokenLoginError.msg, tokenLoginError.key);
   }
-
-  const ssoLoginError = ssoLogin.validateSSOLogin(data, true);
+  const ssoLoginError = await ssoLogin.validateSsoLogin(data);
   if (ssoLoginError) {
-    throw error400(ssoLoginError.msg, ssoLoginError.key);
+    throw error400(ssoLoginError.msg);
   }
-
   const passwordError = validatePassword(data.password);
   if (passwordError) {
     throw passwordError;
@@ -917,7 +916,6 @@ const createMultiFacilityUser = async (data, appUrl) => {
   await createUser(data, response);
   await createUserSettings(data, response);
   await tokenLogin.manageTokenLogin(data, appUrl, response);
-  await ssoLogin.manageSSOLogin(data, response);
   return response;
 };
 
@@ -926,8 +924,8 @@ const validateUpgradeAttemptFields = (data) => {
 
   // Online users can remove place or contact
   if (!_.isNull(data.place) &&
-      !_.isNull(data.contact) &&
-      !_.some(props, key => (!_.isNull(data[key]) && !_.isUndefined(data[key])))
+    !_.isNull(data.contact) &&
+    !_.some(props, key => (!_.isNull(data[key]) && !_.isUndefined(data[key])))
   ) {
     throw error400(
       'One of the following fields are required: ' + props.join(', '),
@@ -937,7 +935,7 @@ const validateUpgradeAttemptFields = (data) => {
   }
 };
 
-const validateUpgradeAttemptPassword = (data) => {
+const validateUpgradeAtetmptPassword = (data) => {
   if (data.password) {
     const passwordError = validatePassword(data.password);
     if (passwordError) {
@@ -958,7 +956,7 @@ const validateUpdateAttempt = (data, fullAccess) => {
   }
 
   validateUpgradeAttemptFields(data);
-  validateUpgradeAttemptPassword(data);
+  validateUpgradeAtetmptPassword(data);
 };
 
 const checkPayloadFacilityCount = (data) => {
@@ -1004,7 +1002,7 @@ module.exports = {
    * @param {string=} data.phone Valid phone number. Required if token_login is enabled for the user.
    * @param {Boolean=} data.token_login A boolean representing whether or not the Login by SMS should be enabled for
    *   this user.
-   * @param {string=} data.oidc_provider Client ID for the OIDC Client. Can be set but not together 
+   * @param {string=} data.oidc_username unique OIDC identifier for user. Can be set but not together
    * with @param token_login|@param password
    * @param {string=} data.fullname Full name
    * @param {string=} data.email Email address
@@ -1029,7 +1027,7 @@ module.exports = {
       return Promise.reject(error400(tokenLoginError.msg, tokenLoginError.key));
     }
 
-    const ssoLoginError = ssoLogin.validateSsoLogin(data, true);
+    const ssoLoginError = await ssoLogin.validateSsoLogin(data);
     if (ssoLoginError) {
       return Promise.reject(error400(ssoLoginError.msg));
     }
@@ -1059,7 +1057,7 @@ module.exports = {
    * @param {string=} users[].phone Valid phone number. Required if token_login is enabled for the user.
    * @param {Boolean=} users[].token_login A boolean representing whether or not the Login by SMS should be enabled for
    *   this user.
-   * @param {string=} users[].oidc_provider Client ID for the OIDC Client. Can be set but not together 
+   * @param {string=} users[].oidc_username unique OIDC identifier for user. Can be set but not together
    * with @param token_login|@param password
    * @param {string=} users[].fullname Full name
    * @param {string=} users[].email Email address
@@ -1109,7 +1107,7 @@ module.exports = {
           throw new Error(tokenLoginError.msg);
         }
 
-        const ssoLoginError = ssoLogin.validateSsoLogin(user, true);
+        const ssoLoginError = await ssoLogin.validateSsoLogin(user);
         if (ssoLoginError) {
           throw error400(ssoLoginError.msg);
         }
@@ -1187,10 +1185,9 @@ module.exports = {
     if (tokenLoginError) {
       return Promise.reject(error400(tokenLoginError.msg, tokenLoginError.key));
     }
-
-    const ssoLoginError = await ssoLogin.validateSSOLogin(data, false, user);
+    const ssoLoginError = await ssoLogin.validateSsoLoginUpdate(data, user);
     if (ssoLoginError) {
-      return Promise.reject(error400(ssoLoginError.msg, ssoLoginError.key));
+      return Promise.reject(error400(ssoLoginError.msg));
     }
 
     await validateUserFacility(data, user);
@@ -1201,10 +1198,7 @@ module.exports = {
       'user-settings': await saveUserSettingsUpdates(userSettings),
     };
 
-    await tokenLogin.manageTokenLogin(data, appUrl, response);
-    await ssoLogin.manageSSOLogin(data, response);
-
-    return response;
+    return tokenLogin.manageTokenLogin(data, appUrl, response);
   },
 
   /**
