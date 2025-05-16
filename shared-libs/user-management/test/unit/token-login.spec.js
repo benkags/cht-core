@@ -3,6 +3,7 @@ const sinon = require('sinon');
 
 const config = require('../../src/libs/config');
 const db = require('../../src/libs/db');
+const ssoLogin = require('../../src/sso-login');
 const service = require('../../src/token-login');
 
 const oneDayInMS = 24 * 60 * 60 * 1000;
@@ -143,6 +144,18 @@ describe('TokenLogin service', () => {
           chai.expect(data).to.deep.equal({ token_login: false });
         });
 
+        it('should do nothing when oidc_username is present', () => {
+          const user = { _id: 'user', name: 'user', token_login: true };
+          const settings = { _id: 'user', name: 'user', contact_id: 'bbb', token_login: true };
+          const data = { token_login: false, oidc_username: 'superSecret' };
+          const result = service.validateTokenLogin(data, false, user, settings);
+          chai.expect(result).to.deep.equal(undefined);
+          // no changes to provided data
+          chai.expect(user).to.deep.equal({ _id: 'user', name: 'user', token_login: true });
+          chai.expect(settings).to.deep.equal({ _id: 'user', name: 'user', contact_id: 'bbb', token_login: true });
+          chai.expect(data).to.deep.equal({ token_login: false, oidc_username: 'superSecret' });
+        });
+
         it('should do nothing when password is present', () => {
           const user = { _id: 'user', name: 'user', token_login: true };
           const settings = { _id: 'user', name: 'user', contact_id: 'bbb', token_login: true };
@@ -274,11 +287,11 @@ describe('TokenLogin service', () => {
     });
 
     it('should throw when user is oidc', () => {
-      config.get.returns({ oidc_provider: { client_id: 'testProvider' } });
+      sinon.stub(ssoLogin, 'isSsoLoginEnabled').returns(true);
       const future = new Date().getTime() + 1000;
       db.medic.get.resolves({ user: 'org.couchdb.user:user' });
       db.users.get.resolves({
-        oidc: true,
+        oidc_username: 'true',
         token_login: {
           active: true,
           token: 'the_token',
@@ -295,6 +308,7 @@ describe('TokenLogin service', () => {
           chai.expect(db.medic.get.args[0]).to.deep.equal([`token:login:the_token`]);
           chai.expect(db.users.get.callCount).to.equal(1);
           chai.expect(db.users.get.args[0]).to.deep.equal(['org.couchdb.user:user']);
+          chai.expect(ssoLogin.isSsoLoginEnabled.calledOnceWithExactly()).to.be.true;
         });
     });
 

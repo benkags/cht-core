@@ -51,7 +51,7 @@ const USER_EDITABLE_FIELDS = RESTRICTED_USER_EDITABLE_FIELDS.concat([
   'contact',
   'type',
   'roles',
-  'oidc',
+  'oidc_username',
 ]);
 
 const RESTRICTED_SETTINGS_EDITABLE_FIELDS = [
@@ -365,7 +365,8 @@ const mapUser = (user, setting, facilities) => {
     roles: user.roles,
     contact: getDoc(user.contact_id, facilities),
     external_id: setting.external_id,
-    known: user.known
+    known: user.known,
+    oidc_username: user.oidc_username,
   };
 };
 
@@ -455,6 +456,10 @@ const getSettingsUpdates = (username, data) => {
     }
   });
 
+  if (Object.keys(data).includes('oidc_username')) {
+    settings.oidc_login = !!data.oidc_username;
+  }
+
   getCommonFieldsUpdates(settings, data);
 
   return settings;
@@ -528,12 +533,10 @@ const getDataRoles = (data) => data.roles || (data.type && getRoles(data.type));
 const missingFields = data => {
   const required = ['username'];
 
-  if (!ssoLogin.shouldEnableSSOLogin(data)) {
-    if (tokenLogin.shouldEnableTokenLogin(data)) {
-      required.push('phone');
-    } else {
-      required.push('password');
-    }
+  if (tokenLogin.shouldEnableTokenLogin(data)) {
+    required.push('phone');
+  } else if (!data.oidc_username) {
+    required.push('password');
   }
 
   const userRoles = getDataRoles(data);
@@ -696,7 +699,7 @@ const validateUserContact = (data, user) => {
  * @param {string=} data.phone Valid phone number. Required if token_login is enabled for the user.
  * @param {Boolean=} data.token_login A boolean representing whether or not the Login by SMS should be enabled for this
  *   user.
- * @param {string=} data.oidc_provider Client ID for the OIDC Client. Can be set but not together 
+ * @param {string=} data.oidc_username unique OIDC identifier for user. Can be set but not together
  * with @param token_login|@param password
  * @param {string=} data.fullname Full name
  * @param {string=} data.email Email address
@@ -720,7 +723,6 @@ const createUserEntities = async (data, appUrl) => {
   await createUser(data, response);
   await createUserSettings(data, response);
   await tokenLogin.manageTokenLogin(data, appUrl, response);
-  await ssoLogin.manageSSOLogin(data, response);
   return response;
 };
 
@@ -898,12 +900,10 @@ const createMultiFacilityUser = async (data, appUrl) => {
   if (tokenLoginError) {
     throw error400(tokenLoginError.msg, tokenLoginError.key);
   }
-
-  const ssoLoginError = ssoLogin.validateSSOLogin(data, true);
+  const ssoLoginError = await ssoLogin.validateSsoLogin(data);
   if (ssoLoginError) {
     throw error400(ssoLoginError.msg, ssoLoginError.key);
   }
-
   const passwordError = validatePassword(data.password);
   if (passwordError) {
     throw passwordError;
@@ -917,7 +917,6 @@ const createMultiFacilityUser = async (data, appUrl) => {
   await createUser(data, response);
   await createUserSettings(data, response);
   await tokenLogin.manageTokenLogin(data, appUrl, response);
-  await ssoLogin.manageSSOLogin(data, response);
   return response;
 };
 
@@ -937,7 +936,7 @@ const validateUpgradeAttemptFields = (data) => {
   }
 };
 
-const validateUpgradeAttemptPassword = (data) => {
+const validateUpgradeAtetmptPassword = (data) => {
   if (data.password) {
     const passwordError = validatePassword(data.password);
     if (passwordError) {
@@ -958,7 +957,7 @@ const validateUpdateAttempt = (data, fullAccess) => {
   }
 
   validateUpgradeAttemptFields(data);
-  validateUpgradeAttemptPassword(data);
+  validateUpgradeAtetmptPassword(data);
 };
 
 const checkPayloadFacilityCount = (data) => {
@@ -1004,7 +1003,7 @@ module.exports = {
    * @param {string=} data.phone Valid phone number. Required if token_login is enabled for the user.
    * @param {Boolean=} data.token_login A boolean representing whether or not the Login by SMS should be enabled for
    *   this user.
-   * @param {string=} data.oidc_provider Client ID for the OIDC Client. Can be set but not together 
+   * @param {string=} data.oidc_username unique OIDC identifier for user. Can be set but not together
    * with @param token_login|@param password
    * @param {string=} data.fullname Full name
    * @param {string=} data.email Email address
@@ -1029,9 +1028,9 @@ module.exports = {
       return Promise.reject(error400(tokenLoginError.msg, tokenLoginError.key));
     }
 
-    const ssoLoginError = ssoLogin.validateSsoLogin(data, true);
+    const ssoLoginError = await ssoLogin.validateSsoLogin(data);
     if (ssoLoginError) {
-      return Promise.reject(error400(ssoLoginError.msg));
+      return Promise.reject(error400(ssoLoginError.msg, ssoLoginError.key));
     }
 
     const passwordError = validatePassword(data.password);
@@ -1059,7 +1058,7 @@ module.exports = {
    * @param {string=} users[].phone Valid phone number. Required if token_login is enabled for the user.
    * @param {Boolean=} users[].token_login A boolean representing whether or not the Login by SMS should be enabled for
    *   this user.
-   * @param {string=} users[].oidc_provider Client ID for the OIDC Client. Can be set but not together 
+   * @param {string=} users[].oidc_username unique OIDC identifier for user. Can be set but not together
    * with @param token_login|@param password
    * @param {string=} users[].fullname Full name
    * @param {string=} users[].email Email address
@@ -1109,9 +1108,9 @@ module.exports = {
           throw new Error(tokenLoginError.msg);
         }
 
-        const ssoLoginError = ssoLogin.validateSsoLogin(user, true);
+        const ssoLoginError = await ssoLogin.validateSsoLogin(user);
         if (ssoLoginError) {
-          throw error400(ssoLoginError.msg);
+          throw error400(ssoLoginError.msg, ssoLoginError.key);
         }
 
         const passwordError = validatePassword(user.password);
@@ -1187,8 +1186,7 @@ module.exports = {
     if (tokenLoginError) {
       return Promise.reject(error400(tokenLoginError.msg, tokenLoginError.key));
     }
-
-    const ssoLoginError = await ssoLogin.validateSSOLogin(data, false, user);
+    const ssoLoginError = await ssoLogin.validateSsoLoginUpdate(data, user);
     if (ssoLoginError) {
       return Promise.reject(error400(ssoLoginError.msg, ssoLoginError.key));
     }
@@ -1201,10 +1199,7 @@ module.exports = {
       'user-settings': await saveUserSettingsUpdates(userSettings),
     };
 
-    await tokenLogin.manageTokenLogin(data, appUrl, response);
-    await ssoLogin.manageSSOLogin(data, response);
-
-    return response;
+    return tokenLogin.manageTokenLogin(data, appUrl, response);
   },
 
   /**
