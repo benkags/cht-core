@@ -124,8 +124,8 @@ const getSettingsByIds = async (ids) => {
 };
 
 const getAllUsers = async () => db.users
-                                  .allDocs({ include_docs: true, start_key: 'org.couchdb.user:', end_key: 'org.couchdb.user:\ufff0' })
-                                  .then(({ rows }) => rows.map(({ doc }) => doc));
+  .allDocs({ include_docs: true, start_key: 'org.couchdb.user:', end_key: 'org.couchdb.user:\ufff0' })
+  .then(({ rows }) => rows.map(({ doc }) => doc));
 
 const getUsers = async (facilityId, contactId) => {
   if (!contactId) {
@@ -151,37 +151,37 @@ const getUsersAndSettings = async ({ facilityId, contactId } = {}) => {
 
 const validateContact = (id, placeID) => {
   return db.medic.get(id)
-           .then(doc => {
-             if (!people.isAPerson(doc)) {
-               return Promise.reject(error400('Wrong type, contact is not a person.', 'contact.type.wrong'));
-             }
-             if (!hasParent(doc, placeID)) {
-               return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
-             }
-             return doc;
-           });
+    .then(doc => {
+      if (!people.isAPerson(doc)) {
+        return Promise.reject(error400('Wrong type, contact is not a person.', 'contact.type.wrong'));
+      }
+      if (!hasParent(doc, placeID)) {
+        return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
+      }
+      return doc;
+    });
 };
 
 const validateNewUsernameForDb = (username, database) => {
   return database.get(createID(username))
-                 .catch(err => {
-                   if (err.status === 404) {
-                     // username not found - it's valid.
-                     return;
-                   }
-                   // unexpected error
-                   err.message = 'Failed to validate new username: ' + err.message;
-                   return Promise.reject(err);
-                 })
-                 .then(user => {
-                   if (user) {
-                     return Promise.reject(error400(
-                       'Username "'+ username +'" already taken.',
-                       'username.taken',
-                       { 'username': username }
-                     ));
-                   }
-                 });
+    .catch(err => {
+      if (err.status === 404) {
+        // username not found - it's valid.
+        return;
+      }
+      // unexpected error
+      err.message = 'Failed to validate new username: ' + err.message;
+      return Promise.reject(err);
+    })
+    .then(user => {
+      if (user) {
+        return Promise.reject(error400(
+          'Username "'+ username +'" already taken.',
+          'username.taken',
+          { 'username': username }
+        ));
+      }
+    });
 };
 
 /**
@@ -209,12 +209,12 @@ const createUser = async (data, response) => {
   updatedUser._id = createID(data.username);
 
   return db.users.put(updatedUser)
-           .then(body => {
-             response.user = {
-               id: body.id,
-               rev: body.rev
-             };
-           });
+    .then(body => {
+      response.user = {
+        id: body.id,
+        rev: body.rev
+      };
+    });
 };
 
 const hasUserCreateFlag = doc => doc?.user_for_contact?.create;
@@ -315,13 +315,13 @@ const setContactParent = data => {
   if (data.contact.parent) {
     // contact parent must exist
     return places.getPlace(data.contact.parent)
-                 .then(place => {
-                   if (!hasParent(place, data.place)) {
-                     return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
-                   }
-                   // save result to contact object
-                   data.contact.parent = lineage.minifyLineage(place);
-                 });
+      .then(place => {
+        if (!hasParent(place, data.place)) {
+          return Promise.reject(error400('Contact is not within place.', 'configuration.user.place.contact'));
+        }
+        // save result to contact object
+        data.contact.parent = lineage.minifyLineage(place);
+      });
   }
   // creating new contact
   data.contact.parent = lineage.minifyLineage(data.place);
@@ -849,21 +849,21 @@ const createRecordBulkLog = (record, status, error, message) => {
 
 const hydrateUserSettings = (userSettings) => {
   return db.medic
-           .allDocs({ keys: [ userSettings.contact_id, ...userSettings.facility_id ], include_docs: true })
-           .then((response) => {
-             if (!response.rows || !Array.isArray(response.rows)) {
-               return userSettings;
-             }
-             const [ contactRow, ...facilityRows ] = response.rows;
-             if (!facilityRows.length || !contactRow) { // malformed response
-               return userSettings;
-             }
+    .allDocs({ keys: [ userSettings.contact_id, ...userSettings.facility_id ], include_docs: true })
+    .then((response) => {
+      if (!response.rows || !Array.isArray(response.rows)) {
+        return userSettings;
+      }
+      const [ contactRow, ...facilityRows ] = response.rows;
+      if (!facilityRows.length || !contactRow) { // malformed response
+        return userSettings;
+      }
 
-             userSettings.facility = facilityRows.map(row => row.doc);
-             userSettings.contact = contactRow.doc;
+      userSettings.facility = facilityRows.map(row => row.doc);
+      userSettings.contact = contactRow.doc;
 
-             return userSettings;
-           });
+      return userSettings;
+    });
 };
 
 const getUserDoc = (username, dbName) => db[dbName]
@@ -924,8 +924,8 @@ const validateUpgradeAttemptFields = (data) => {
 
   // Online users can remove place or contact
   if (!_.isNull(data.place) &&
-    !_.isNull(data.contact) &&
-    !_.some(props, key => (!_.isNull(data[key]) && !_.isUndefined(data[key])))
+      !_.isNull(data.contact) &&
+      !_.some(props, key => (!_.isNull(data[key]) && !_.isUndefined(data[key])))
   ) {
     throw error400(
       'One of the following fields are required: ' + props.join(', '),

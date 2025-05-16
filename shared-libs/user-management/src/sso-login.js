@@ -5,8 +5,8 @@ const passwords = require('./libs/passwords');
 const isSsoLoginEnabled = () => !!config.get('oidc_provider');
 
 const getUsersByOidcUsername = async (oidcUsername) => db.users
-                                                         .query('users/users_by_field', { include_docs: true, key: ['oidc_username', oidcUsername] })
-                                                         .then(({ rows }) => rows.map(({ doc }) => doc));
+  .query('users/users_by_field', { include_docs: true, key: ['oidc_username', oidcUsername] })
+  .then(({ rows }) => rows.map(({ doc }) => doc));
 
 const getUserIdWithDuplicateOidcUsername = async (oidcUsername, userDocId) => {
   const duplicates = await getUsersByOidcUsername(oidcUsername);

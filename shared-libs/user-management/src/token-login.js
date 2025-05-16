@@ -151,26 +151,26 @@ const clearOldTokenLoginDoc = ({ token_login: { token }={} }={}) => {
   }
 
   return db.medic
-           .get(getTokenLoginDocId(token))
-           .then(doc => {
-             if (!doc || !doc.tasks) {
-               return;
-             }
+    .get(getTokenLoginDocId(token))
+    .then(doc => {
+      if (!doc || !doc.tasks) {
+        return;
+      }
 
-             const pendingTasks = doc.tasks.filter(task => task.state === 'pending');
-             if (!pendingTasks.length) {
-               return;
-             }
+      const pendingTasks = doc.tasks.filter(task => task.state === 'pending');
+      if (!pendingTasks.length) {
+        return;
+      }
 
-             pendingTasks.forEach(task => taskUtils.setTaskState(task, 'cleared'));
-             return db.medic.put(doc);
-           })
-           .catch(err => {
-             if (err.status === 404) {
-               return;
-             }
-             throw err;
-           });
+      pendingTasks.forEach(task => taskUtils.setTaskState(task, 'cleared'));
+      return db.medic.put(doc);
+    })
+    .catch(err => {
+      if (err.status === 404) {
+        return;
+      }
+      throw err;
+    });
 };
 
 /**
@@ -269,35 +269,35 @@ const getUserByToken = (token) => {
 
   const loginTokenDocId = getTokenLoginDocId(token);
   return db.medic
-           .get(loginTokenDocId)
-           .then(loginTokenDoc => db.users.get(loginTokenDoc.user))
-           .then(user => {
-             if (!user.token_login || !user.token_login.active) {
-               throw invalid;
-             }
+    .get(loginTokenDocId)
+    .then(loginTokenDoc => db.users.get(loginTokenDoc.user))
+    .then(user => {
+      if (!user.token_login || !user.token_login.active) {
+        throw invalid;
+      }
 
-             if (user.token_login.token !== token) {
-               throw invalid;
-             }
+      if (user.token_login.token !== token) {
+        throw invalid;
+      }
 
-             if (user.token_login.expiration_date <= new Date().getTime()) {
-               throw expired;
-             }
+      if (user.token_login.expiration_date <= new Date().getTime()) {
+        throw expired;
+      }
 
-             if (user.oidc_username && ssoLogin.isSsoLoginEnabled()) {
-               const err = new Error('Token login not allowed for SSO users');
-               err.status = 401;
-               throw err;
-             }
+      if (user.oidc_username && ssoLogin.isSsoLoginEnabled()) {
+        const err = new Error('Token login not allowed for SSO users');
+        err.status = 401;
+        throw err;
+      }
 
-             return user._id;
-           })
-           .catch(err => {
-             if (err.status === 404) {
-               throw invalid;
-             }
-             throw err;
-           });
+      return user._id;
+    })
+    .catch(err => {
+      if (err.status === 404) {
+        throw invalid;
+      }
+      throw err;
+    });
 };
 
 
